@@ -3,9 +3,9 @@ using DataFrames
 using Flux
 using MLDataUtils
 using Statistics
+using LinearAlgebra
 using MLBase
-using MLJ
-using CategoricalArrays
+using StatsBase
 
 # Load data
 data_path = "All estimation raw data.csv"
@@ -14,30 +14,24 @@ data = filter(row -> row.RT != "NA", CSV.read(data_path, DataFrame))
 # Preprocess features: Gender encoding, select relevant columns
 data.Gender = ifelse.(data.Gender .== "M", 1, 0)
 data.Button = ifelse.(data.Button .== "R", 1, 0)
-data.LotShapeA = categorical(data.LotShapeA)  # Ensure the column is treated as categorical
-# Set up the one-hot encoder
-encoder = OneHotEncoder()
 
-# Create a machine that binds the model (encoder) and the data
-mach = machine(encoder, data.LotShapeA)
+LotShapeABool = select(data, [:LotShapeA => ByRow(isequal(v))=> Symbol(v) for v in unique(data.LotShapeA)])
+rename!(LotShapeABool, [:RskewA, :NoneA, :SymmA, :LskewA])
+data = hcat(data, LotShapeABool)
 
-# Fit and transform the data
-fit!(mach)
-transformed_data = transform(mach, data.LotShapeA)
-println(transformed_data)
+LotShapeBBool = select(data, [:LotShapeB => ByRow(isequal(v))=> Symbol(v) for v in unique(data.LotShapeB)])
+rename!(LotShapeBBool, [:NoneB, :SymmB, :RSkewB, :LskewB])
+data = hcat(data, LotShapeBBool)
 
-data = hcat(data, hot_encoded)
-features = select(data, [:Age, :Gender, :Apay, :Bpay, :Ha, :pHa, :La, :Hb, :pHb, :Lb, :Amb, :Forgone])
+features = select(data, [:Age, :Gender, :Apay, :Bpay, :Ha, :pHa, :La, :Hb, :pHb, :Lb, :Forgone, 
+    :RskewA, :NoneA, :SymmA, :LskewA])
 features = Matrix{Float32}(features)  # Convert DataFrame to Matrix
 
 # Normalize features
-for i in 1:size(features, 2)
-    features[:, i] .= (features[:, i] .- mean(features[:, i])) ./ std(features[:, i])
-end
+normed_features = Flux.normalise(features, dims=2)
 
 # Transpose features so that each column is an observation
 features = transpose(features)  # Convert from 510750 x 12 to 12 x 510750
-
 
 # Prepare labels for classification
 labels = Flux.onehotbatch(data.B, [false, true])
@@ -57,7 +51,7 @@ model = Chain(
 loss(x, y) = Flux.crossentropy(model(x), y)
 optimizer = ADAM(0.001)
 
-epochs = 200
+epochs = 300
 for epoch in 1:epochs
     Flux.train!(loss, Flux.params(model), [(train_features, train_labels)], optimizer)
     println("Epoch $epoch: Loss $(loss(train_features, train_labels))")
@@ -65,6 +59,22 @@ end
 
 accuracy(x, y) = mean(Flux.onecold(model(x)) .== Flux.onecold(y))
 println("Test set accuracy: $(accuracy(test_features, test_labels))")
+
+# Generate predictions
+predictions = Flux.onecold(model(test_features))  # Adjust indices if necessary
+
+# Create confusion matrix
+cm = confusmat(2, Flux.onecold(test_labels), predictions)  # Adjust indices for true labels as well
+
+# Display confusion matrix
+println("Confusion Matrix:")
+println(cm)
+    
+# Calculate accuracy
+cmAccuracy = sum(diag(cm)) / sum(cm)
+println("Test set accuracy: $accuracy")
+
+
 
 
 
