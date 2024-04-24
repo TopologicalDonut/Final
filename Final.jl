@@ -13,7 +13,7 @@ using StatsBase
 #### Risk Model w/o attention
 
 ## First training the model
-data_path = "All estimation raw data.csv"
+data_path = "Data/All estimation raw data.csv"
 data = filter(row -> row.RT != "NA", CSV.read(data_path, DataFrame))
 
 data.Location = ifelse.(data.Location .== "Technion", 1, 0)
@@ -69,7 +69,7 @@ println("Test set accuracy: $cmAccuracy") # 0.9973333333333333
 
 
 ## Predicting the test dataset
-new_data_path = "raw-comp-set-data-Track-2.csv"
+new_data_path = "Data/raw-comp-set-data-Track-2.csv"
 new_data = CSV.read(new_data_path, DataFrame)
 
 new_data.Location = ifelse.(new_data.Location .== "Technion", 1, 0)
