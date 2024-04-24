@@ -10,10 +10,13 @@ using LinearAlgebra
 using MLBase
 using StatsBase
 
+#### Risk Model w/o attention
+
 ## First training the model
 data_path = "All estimation raw data.csv"
 data = filter(row -> row.RT != "NA", CSV.read(data_path, DataFrame))
 
+data.Location = ifelse.(data.Location .== "Technion", 1, 0)
 data.Gender = ifelse.(data.Gender .== "M", 1, 0)
 data.Button = ifelse.(data.Button .== "R", 1, 0)
 
@@ -25,9 +28,9 @@ LotShapeBBool = select(data, [:LotShapeB => ByRow(isequal(v))=> Symbol(v) for v 
 rename!(LotShapeBBool, [:NoneB, :SymmB, :RSkewB, :LskewB])
 data = hcat(data, LotShapeBBool)
 
-features = select(data, [:Age, :Gender, :Apay, :Bpay, :Ha, :pHa, :La, :Hb, :pHb, :Lb, :Forgone, 
-    :RskewA, :NoneA, :SymmA, :LskewA])
-features = Matrix{Float32}(features)  # Convert DataFrame to Matrix
+features = select(data, [:Location, :Age, :Gender, :Apay, :Bpay, :Ha, :pHa, :La, :Hb, :pHb, :Lb, :Forgone, 
+    :RskewA, :NoneA, :SymmA, :LskewA, :Amb])
+features = Matrix{Float32}(features)
 features = Flux.normalise(features, dims=2)
 features = transpose(features) # Need to do this so dimensions match
 
@@ -39,15 +42,14 @@ model = Chain(
     Dense(size(train_features, 1), 64, relu),
     Dense(64, 64, relu),
     Dense(64, 64, relu),
-    Dense(64, 32, relu),
-    Dense(32, 2),  # Two outputs for two classes
+    Dense(64, 2), 
     softmax
 )
 
 loss(x, y) = Flux.crossentropy(model(x), y)
 optimizer = ADAM(0.001)
 
-epochs = 250
+epochs = 200
 for epoch in 1:epochs
     Flux.train!(loss, Flux.params(model), [(train_features, train_labels)], optimizer)
     println("Epoch $epoch: Loss $(loss(train_features, train_labels))")
@@ -70,6 +72,7 @@ println("Test set accuracy: $cmAccuracy") # 0.9973333333333333
 new_data_path = "raw-comp-set-data-Track-2.csv"
 new_data = CSV.read(new_data_path, DataFrame)
 
+new_data.Location = ifelse.(new_data.Location .== "Technion", 1, 0)
 new_data.Gender = ifelse.(new_data.Gender .== "M", 1, 0)
 new_data.Button = ifelse.(new_data.Button .== "R", 1, 0)
 
@@ -81,8 +84,8 @@ testLotShapeBBool = select(new_data, [:LotShapeB => ByRow(isequal(v))=> Symbol(v
 rename!(LotShapeBBool, [:NoneB, :SymmB, :RSkewB, :LskewB])
 new_data = hcat(new_data, testLotShapeBBool)
 
-new_features = select(new_data, [:Age, :Gender, :Apay, :Bpay, :Ha, :pHa, :La, :Hb, :pHb, :Lb, :Forgone, 
-:RskewA, :NoneA, :SymmA, :LskewA])
+new_features = select(new_data, [:Location, :Age, :Gender, :Apay, :Bpay, :Ha, :pHa, :La, :Hb, :pHb, :Lb, :Forgone, 
+:RskewA, :NoneA, :SymmA, :LskewA, :Amb])
 new_features = Matrix{Float32}(new_features)  
 new_features = Flux.normalise(new_features, dims=2)
 new_features = transpose(new_features)
@@ -90,8 +93,67 @@ new_features = transpose(new_features)
 new_predictions = Flux.onecold(model(new_features))  
 actual_labels = new_data.B
 
-new_cm = confusmat(2, actual_labels .+ 1, new_predictions) # [1896 2; 11 1841]
+new_cm = confusmat(2, actual_labels .+ 1, new_predictions) # [1896 6; 12 1841]
 println("Confusion Matrix:\n", new_cm)
 
-new_cmAccuracy = sum(diag(new_cm)) / sum(new_cm) # 0.9965333333333334
+new_cmAccuracy = sum(diag(new_cm)) / sum(new_cm) # 0.9952
 println("Test set accuracy: $new_cmAccuracy")
+
+#### Now incorporating attention elements
+
+# Need order, trial, rt
+data.RT = parse.(Int64, data.RT)
+attn_features = select(data, [:Location, :Age, :Gender, :Apay, :Bpay, :Ha, :pHa, :La, :Hb, :pHb, :Lb, :Forgone, 
+    :RskewA, :NoneA, :SymmA, :LskewA, :Amb, :Order, :Trial, :RT])
+attn_features = Matrix{Float32}(attn_features)  
+attn_features = Flux.normalise(attn_features, dims=2)
+attn_features = transpose(attn_features) 
+
+labels = Flux.onehotbatch(data.B, [false, true])
+
+(train_attn_features, train_labels), (test_attn_features, test_labels) = splitobs((attn_features, labels), at=0.8)
+
+attn_model = Chain(
+    Dense(size(train_attn_features, 1), 64, relu),
+    Dense(64, 64, relu),
+    Dense(64, 64, relu),
+    Dense(64, 2),
+    softmax
+)
+
+loss(x, y) = Flux.crossentropy(attn_model(x), y)
+optimizer = ADAM(0.001)
+
+epochs = 200
+for epoch in 1:epochs
+    Flux.train!(loss, Flux.params(attn_model), [(train_attn_features, train_labels)], optimizer)
+    println("Epoch $epoch: Loss $(loss(train_attn_features, train_labels))")
+end
+
+accuracy(x, y) = mean(Flux.onecold(attn_model(x)) .== Flux.onecold(y))
+println("Test set accuracy: $(accuracy(test_attn_features, test_labels))")
+
+predictions = Flux.onecold(attn_model(test_attn_features)) 
+
+cm_attn = confusmat(2, Flux.onecold(test_labels), predictions)  
+
+println("Confusion Matrix:\n", cm_attn) # [19694 72; 22 15462]
+    
+cm_attn_Accuracy = sum(diag(cm_attn)) / sum(cm_attn)
+println("Test set accuracy: $cm_attn_Accuracy") # 0.9973333333333333
+
+## Predicting the test dataset
+attn_new_features = select(new_data, [:Location, :Age, :Gender, :Apay, :Bpay, :Ha, :pHa, :La, :Hb, :pHb, :Lb, :Forgone, 
+:RskewA, :NoneA, :SymmA, :LskewA, :Amb, :Order, :Trial, :RT])
+attn_new_features = Matrix{Float32}(attn_new_features)  
+attn_new_features = Flux.normalise(attn_new_features, dims=2)
+attn_new_features = transpose(attn_new_features)
+
+new_predictions = Flux.onecold(attn_model(attn_new_features))  
+actual_labels = new_data.B
+
+attn_new_cm = confusmat(2, actual_labels .+ 1, new_predictions) # [1797 101; 168 1684]
+println("Confusion Matrix:\n", attn_new_cm)
+
+attn_new_cmAccuracy = sum(diag(attn_new_cm)) / sum(attn_new_cm) # 0.9283
+println("Test set accuracy: $attn_new_cmAccuracy")
