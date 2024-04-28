@@ -38,7 +38,7 @@ labels = Flux.onehotbatch(data.B, [false, true])
 
 (train_features, train_labels), (test_features, test_labels) = splitobs((features, labels), at=0.8)
 
-model = Chain(
+risk_model = Chain(
     Dense(size(train_features, 1), 16, relu),
     Dense(16, 16, relu),
     Dense(16, 16, relu),
@@ -49,52 +49,43 @@ model = Chain(
 loss(x, y) = Flux.crossentropy(model(x), y)
 optimizer = ADAM(0.001)
 
-# Early stopping parameters
-patience = 20
-best_loss = Inf
-epochs_since_improvement = 0
-epochs=1000
-best_model = deepcopy(model)
-loss_threshold = 0.01
-
-for epochs in 1:epochs
-    Flux.train!(loss, Flux.params(model), [(train_features, train_labels)], optimizer)
-    # Evaluate on validation set
-    val_loss = loss(test_features, test_labels)
-    println("Validation Loss: $val_loss")
-    
-    # Check if current validation loss is below the threshold
-    if val_loss < loss_threshold
-        println("Loss threshold reached at epoch $epoch with validation loss $current_val_loss")
-        best_model = deepcopy(model)
-        break
+function earlystoptrain(epochs, model, loss_threshold, patience, best_loss, epochs_since_improvement,  
+    train_features, train_labels, test_features, test_labels)
+    for epoch in 1:epochs
+        Flux.train!(loss, Flux.params(model), [(train_features, train_labels)], optimizer)
+        val_loss = loss(test_features, test_labels)
+        println("Validation Loss: $val_loss")
+        if val_loss < loss_threshold
+            println("Loss threshold reached at epoch $epoch with validation loss $val_loss")
+            best_model = deepcopy(model)
+            break
+        end
+        if val_loss < best_loss
+            best_loss = val_loss
+            epochs_since_improvement = 0
+            best_model = deepcopy(model)
+            println("New best model saved with loss $best_loss at epoch $epoch")
+        else
+            epochs_since_improvement += 1
+        end
+        if epochs_since_improvement >= patience
+            println("Stopping early after $epochs_since_improvement epochs without improvement.")
+            break
+        end
     end
-
-    # Check for improvement
-    if val_loss < best_loss
-        best_loss = val_loss
-        epochs_since_improvement = 0
-        best_model = deepcopy(model)
-        println("New best model saved with loss $best_loss at epoch $epochs")
-    else
-        epochs_since_improvement += 1
-    end
-
-    # Stop if no improvement in the last 'patience' epochs
-    if epochs_since_improvement >= patience
-        println("Stopping early after $epochs_since_improvement epochs without improvement.")
-        break
-    end
+    return best_model 
 end
 
-accuracy(x, y) = mean(Flux.onecold(best_model(x)) .== Flux.onecold(y))
+best_risk_model = earlystoptrain(1000, risk_model, 0.01, 20, Inf, 0, train_features, train_labels, test_features, test_labels)
+
+accuracy(x, y) = mean(Flux.onecold(best_risk_model(x)) .== Flux.onecold(y))
 println("Test set accuracy: $(accuracy(test_features, test_labels))")
 
-predictions = Flux.onecold(best_model(test_features)) 
+predictions = Flux.onecold(best_risk_model(test_features)) 
 
 cm = confusmat(2, Flux.onecold(test_labels), predictions)  
 
-println("Confusion Matrix:\n", cm) # [19694 72; 22 15462]
+println("Confusion Matrix:\n", cm) # [55173 187; 3084 43706]
 
 
 ## Predicting the test dataset
@@ -119,14 +110,14 @@ new_features = Matrix{Float32}(new_features)
 new_features = Flux.normalise(new_features, dims=2)
 new_features = transpose(new_features)
 
-new_predictions = Flux.onecold(best_model(new_features))  
+new_predictions = Flux.onecold(best_risk_model(new_features))  
 actual_labels = new_data.B
 
-new_cm = confusmat(2, actual_labels .+ 1, new_predictions) # [1896 6; 12 1841]
+new_cm = confusmat(2, actual_labels .+ 1, new_predictions)
 println("Confusion Matrix:\n", new_cm)
 
-new_cmAccuracy = sum(diag(new_cm)) / sum(new_cm) # 0.9952
-println("Test set accuracy: $new_cmAccuracy")
+new_cmAccuracy = sum(diag(new_cm)) / sum(new_cm) # [1893 5; 33 1819]
+println("Test set accuracy: $new_cmAccuracy") # 0.98987
 
 #### Now incorporating attention elements
 
@@ -152,12 +143,7 @@ attn_model = Chain(
 loss(x, y) = Flux.crossentropy(attn_model(x), y)
 optimizer = ADAM(0.001)
 
-patience = 20
-best_loss = Inf
-epochs_since_improvement = 0
-epochs=1000
-best_attn_model = deepcopy(attn_model)
-loss_threshold = 0.01
+best_attn_model = earlystoptrain(1000, attn_model, 0.01, 20, Inf, 0, train_attn_features, train_labels, test_attn_features, test_labels)
 
 for epochs in 1:epochs
     Flux.train!(loss, Flux.params(attn_model), [(train_attn_features, train_labels)], optimizer)
@@ -190,16 +176,14 @@ for epochs in 1:epochs
 end
 
 accuracy(x, y) = mean(Flux.onecold(best_attn_model(x)) .== Flux.onecold(y))
-println("Test set accuracy: $(accuracy(test_attn_features, test_labels))")
+println("Test set accuracy: $(accuracy(test_attn_features, test_labels))") # 0.9716
 
 predictions = Flux.onecold(best_attn_model(test_attn_features)) 
 
 cm_attn = confusmat(2, Flux.onecold(test_labels), predictions)  
 
-println("Confusion Matrix:\n", cm_attn) # [19694 72; 22 15462]
-    
-cm_attn_Accuracy = sum(diag(cm_attn)) / sum(cm_attn)
-println("Test set accuracy: $cm_attn_Accuracy") # 0.9973333333333333
+println("Confusion Matrix:\n", cm_attn) # [55327 33; 2871 43919]
+
 
 ## Predicting the test dataset
 attn_new_features = select(new_data, [:Location, :Age, :Gender, :Apay, :Bpay, :Ha, :pHa, :La, :Hb, :pHb, :Lb, :Forgone, 
@@ -211,8 +195,8 @@ attn_new_features = transpose(attn_new_features)
 new_predictions = Flux.onecold(best_attn_model(attn_new_features))  
 actual_labels = new_data.B
 
-attn_new_cm = confusmat(2, actual_labels .+ 1, new_predictions) # [1797 101; 168 1684]
+attn_new_cm = confusmat(2, actual_labels .+ 1, new_predictions) # [1895 3; 36 1816]
 println("Confusion Matrix:\n", attn_new_cm)
 
-attn_new_cmAccuracy = sum(diag(attn_new_cm)) / sum(attn_new_cm) # 0.9283
+attn_new_cmAccuracy = sum(diag(attn_new_cm)) / sum(attn_new_cm) # 0.9896
 println("Test set accuracy: $attn_new_cmAccuracy")
